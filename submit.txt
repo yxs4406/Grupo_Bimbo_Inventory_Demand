@@ -1,0 +1,61 @@
+setwd("c:/users/yxs44/Rstudio/Bimbo")
+suppressPackageStartupMessages(library(dplyr, quietly=TRUE))
+suppressPackageStartupMessages(library(data.table, quietly=TRUE))
+
+train <- fread('train.csv')
+
+meanAgencia<-train[,.(Ventauni=mean(Venta_uni_hoy)/mean(Dev_uni_proxima),Venta=mean(Venta_hoy)/mean(Dev_proxima)),by=Agencia_ID]
+meanRuta_SAK<-train[,.(Ventauni=mean(Venta_uni_hoy)/mean(Dev_uni_proxima),Venta=mean(Venta_hoy)/mean(Dev_proxima)),by=Ruta_SAK]
+meanCliente<-train[,.(Ventauni=mean(Venta_uni_hoy)/mean(Dev_uni_proxima),Venta=mean(Venta_hoy)/mean(Dev_proxima)),by=Cliente_ID]
+meanProducto<-train[,.(Ventauni=mean(Venta_uni_hoy)/mean(Dev_uni_proxima),Venta=mean(Venta_hoy)/mean(Dev_proxima)),by=Producto_ID]
+meanCanal<-train[,.(Ventauni=mean(Venta_uni_hoy)/mean(Dev_uni_proxima),Venta=mean(Venta_hoy)/mean(Dev_proxima)),by=Canal_ID]
+
+features=c("Agencia_ID","Canal_ID","Ruta_SAK","Cliente_ID","Producto_ID")
+train<-train[,c("Semana",features, "Demanda_uni_equil"), with=F]
+
+temp<-train[F,2:6, with=F]
+for(i in 3:9){
+  temp<-full_join(temp, subset(train,Semana==i)[,2:7, with=F])
+  colnames(temp)[colnames(temp)=="Demanda_uni_equil"]<-paste0("Demanda_uni_equil_",i)
+  train<-train[!train$Semana==i,]
+}
+temp<-full_join(temp,meanAgencia)
+temp<-full_join(temp,meanCliente)
+temp<-full_join(temp,meanProducto)
+temp<-full_join(temp,meanRuta_SAK)
+temp<-full_join(temp,meanCanal)
+rm(meanAgencia)
+rm(meanCanal)
+rm(meanProducto)
+rm(meanCliente)
+rm(meanRuta_SAK)
+rm(train)
+
+test.data <-  fread('test.csv')
+test<-test.data[,.(sumWeeks=sum(Semana)), by=features]
+test[["Demanda_p1"]]<-NA
+test$Demanda_p1[which((test$sumWeeks==10) | (test$sumWeeks==21))]<-0
+test[,sumWeeks:=NULL]
+combined_data<-merge(x=test,y=temp,by=features, all.x = T)
+rm(temp)
+predict_data<-subset(combined_data,!is.na(Demanda_p1)) %>% mutate(Semana=10)
+model_features<-c("Ventauni","Venta","Demanda_uni_equil_3","Demanda_uni_equil_4","Demanda_uni_equil_5","Demanda_uni_equil_6","Demanda_uni_equil_7","Demanda_uni_equil_8")
+trainX<-as.matrix(predict_data[, model_features, with=F])
+trainX[is.na(trainX)]<-0
+trainY<-log1p(predict_data$Demanda_uni_equil_9)
+trainX<-trainX[!is.na(trainY),]
+trainY<-trainY[!is.na(trainY)]
+
+suppressPackageStartupMessages(library(xgboost, quietly=TRUE))
+
+model<-xgboost(data=trainX, label=trainY, nround=50)
+predict_features <- c("Demanda_uni_equil_4", "Demanda_uni_equil_5", "Demanda_uni_equil_6","Demanda_uni_equil_7", "Demanda_uni_equil_8", "Demanda_uni_equil_9")
+predictX <- as.matrix(predict_data[, predict_features, with=F])
+predictX[is.na(predictX)] <- 0
+predict_data$Demanda_uni_equil <- expm1(predict(model, predictX))
+submitDF <- left_join(test.data, predict_data) %>% select(id, Demanda_uni_equil)
+submitDF[is.na(submitDF)]<-0
+submit<-submitDF[with(submitDF,order(id)),]
+#submit[,1]=as.integer(submit[,1])
+#class(submit[,1])='int32'
+write.csv(submit, 'submission.csv', row.names = FALSE)
